@@ -143,6 +143,10 @@ wss.on('connection', async (ws, req) => {
 
     const { move = '', token, gameId } = dt;
 
+    // ! No need to revalidate token here because
+    // ! it is validated upon match lookup & start.
+    // ! It just checks whether the token belongs to one of the players
+
     if (!game_list[gameId]) return;
 
     // * | ^ and $ make so the match goes from the start of the string to the end (meaning no extra chars)
@@ -156,10 +160,12 @@ wss.on('connection', async (ws, req) => {
     // * White's move, notifies black
     if (game.white.token == token && game.turn == 0) {
       game.black.ws.send(JSON.stringify({ type: 'move', data: move }));
+      game.turn = 1;
     }
     // * Black's move, notifies white
     else if (game.black.token == token && game.turn == 1) {
       game.white.ws.send(JSON.stringify({ type: 'move', data: move }));
+      game.turn = 0;
     }
   });
 
