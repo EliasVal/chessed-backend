@@ -3,7 +3,7 @@ import express from 'express';
 import 'dotenv/config';
 import { initializeApp as initializeAdmin } from 'firebase-admin/app';
 import { initializeApp } from 'firebase/app';
-import { getAuth as getClientAuth, signInWithEmailAndPassword } from 'firebase/auth';
+import { getAuth as getClientAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import firebaseAdmin from 'firebase-admin';
 import bodyParser from 'body-parser';
 import { getAuth } from 'firebase-admin/auth';
@@ -207,14 +207,10 @@ app.post('/signup', async (request, response) => {
   }
 
   try {
-    const u = await getAuth().createUser({
-      email,
-      password,
-      displayName: username,
-    });
+    const u = await createUserWithEmailAndPassword(getClientAuth(), email, password);
 
     // * Create user in the DB
-    await getDatabase().ref(`users/${u.uid}`).set({ username, elo: 100 });
+    await getDatabase().ref(`users/${u.user.uid}`).set({ username, elo: 100 });
 
     response.json({ data: await getClientAuth().currentUser?.getIdToken() });
 
