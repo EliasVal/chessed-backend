@@ -1,4 +1,4 @@
-import WebSocket, { WebSocketServer } from 'ws';
+import { WebSocketServer } from 'ws';
 import express from 'express';
 import 'dotenv/config';
 import { initializeApp as initializeAdmin } from 'firebase-admin/app';
@@ -28,6 +28,7 @@ const client = initializeApp({
   appId: '1:627390308707:web:7517887fc52d8fd6e93356',
 });
 
+// ! INITIALIZE EXPRESS.JS
 const app = express();
 app.use(bodyParser.json());
 app.use(
@@ -35,21 +36,15 @@ app.use(
     extended: true,
   })
 );
+app.listen(3000);
 
 const wss = new WebSocketServer({
   port: 8080,
 });
 
-/*
-  began - bool
-  white - ws
-  black - ws
-  turn - int (0 == white)
-
-*/
 const game_list: { [index: string]: Game } = {};
 
-wss.on('connection', async function connection(ws, req) {
+wss.on('connection', async (ws, req) => {
   /*               */
   /*               */
   /*   USER AUTH   */
@@ -64,8 +59,9 @@ wss.on('connection', async function connection(ws, req) {
 
   if (token) ws.close(4001, JSON.stringify({ type: 'close', data: 'Missing token' }));
 
+  let decodedToken;
   try {
-    await getAuth().verifyIdToken(token);
+    decodedToken = await getAuth().verifyIdToken(token);
   } catch {
     ws.close(4001, JSON.stringify({ type: 'close', data: 'Invalid token' }));
     return;
@@ -82,14 +78,32 @@ wss.on('connection', async function connection(ws, req) {
       found = true;
       const game = game_list[id];
 
-      if (game.white) game.black = { ws, token };
-      else game.white = { ws, token };
+      if (game.white) game.black = { ws, token, uid: decodedToken.uid };
+      else game.white = { ws, token, uid: decodedToken.uid };
 
       game.began = true;
 
+      // * Get Player's names
+      const blackName = (await getDatabase().ref(`users/${game.black.uid}/username`).get()).val();
+      const whiteName = (await getDatabase().ref(`users/${game.white.uid}/username`).get()).val();
+
       // * Notify both players of a match start
-      game.black.ws.send(JSON.stringify({ type: 'match_start', data: id, color: 'black' }));
-      game.white.ws.send(JSON.stringify({ type: 'match_start', data: id, color: 'white' }));
+      game.black.ws.send(
+        JSON.stringify({
+          type: 'match_start',
+          data: id,
+          color: 'black',
+          playerName: whiteName,
+        })
+      );
+      game.white.ws.send(
+        JSON.stringify({
+          type: 'match_start',
+          data: id,
+          color: 'white',
+          playerName: blackName,
+        })
+      );
     }
   }
 
@@ -103,9 +117,9 @@ wss.on('connection', async function connection(ws, req) {
 
     game_list[newId] = {
       // @ts-ignore
-      black: isWhite ? null : { ws, token },
+      black: isWhite ? null : { ws, token, uid: decodedToken.uid },
       // @ts-ignore
-      white: isWhite ? { ws, token } : null,
+      white: isWhite ? { ws, token, uid: decodedToken.uid } : null,
       turn: 0,
       began: false,
     };
@@ -115,7 +129,7 @@ wss.on('connection', async function connection(ws, req) {
 
   ws.on('error', console.error);
 
-  ws.on('message', function message(data) {
+  ws.on('message', (data) => {
     let dt;
     try {
       dt = JSON.parse(data.toString());
@@ -127,23 +141,31 @@ wss.on('connection', async function connection(ws, req) {
 
     if (!game_list[gameId]) return;
 
-    if (move.match(/[0-7]{2}-[0-7]{2}/)) {
+    // * | ^ and $ make so the match goes from the start of the string to the end (meaning no extra chars)
+    // * | [0-7]{2} matches numbers from 0-7 (inclusive) twice in a row, then seperated by a dash
+    // * | (-[qrnb])? is for pawn promotions, Queen, Rook, kNight, Bishop
+    if (!move.match(/^([0-7]{2}-[0-7]{2}(-[qrnb])?)$/)) {
+      return;
     }
 
     const game = game_list[gameId];
+    // * White's move, notifies black
     if (game.white.token == token && game.turn == 0) {
       game.black.ws.send(JSON.stringify({ type: 'move', data: move }));
+    }
+    // * Black's move, notifies white
+    else if (game.black.token == token && game.turn == 1) {
+      game.white.ws.send(JSON.stringify({ type: 'move', data: move }));
     }
   });
 
   ws.on('close', () => {});
 });
 
-app.listen(3000);
-
 app.post('/login', async (request, response) => {
   const { email, password } = request.body;
 
+  // * Check if all params are in place
   if (!email || !password) {
     response.status(400).json({ message: 'Missing parameters' });
 
@@ -153,6 +175,7 @@ app.post('/login', async (request, response) => {
   try {
     const cred = await signInWithEmailAndPassword(getClientAuth(), email, password);
 
+    // * Revoke old token
     await getAuth().revokeRefreshTokens(cred.user.uid);
     response.json({ data: await getClientAuth().currentUser?.getIdToken() });
 
@@ -169,12 +192,14 @@ app.post('/login', async (request, response) => {
 app.post('/signup', async (request, response) => {
   const { email, password, username } = request.body;
 
+  // * Check if all params were provided
   if (!email || !password) {
     response.status(400).json({ data: 'Missing parameters' });
 
     return;
   }
 
+  // * Check if username is atleast 3 chars long
   if ((username || '').length < 3) {
     response.status(400).json({ data: 'Username too short' });
 
@@ -188,6 +213,7 @@ app.post('/signup', async (request, response) => {
       displayName: username,
     });
 
+    // * Create user in the DB
     await getDatabase().ref(`users/${u.uid}`).set({ username, elo: 100 });
 
     response.json({ data: await getClientAuth().currentUser?.getIdToken() });
