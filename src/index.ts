@@ -3,7 +3,11 @@ import express from 'express';
 import 'dotenv/config';
 import { initializeApp as initializeAdmin } from 'firebase-admin/app';
 import { initializeApp } from 'firebase/app';
-import { getAuth as getClientAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import {
+  getAuth as getClientAuth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from 'firebase/auth';
 import firebaseAdmin from 'firebase-admin';
 import bodyParser from 'body-parser';
 import { getAuth } from 'firebase-admin/auth';
@@ -12,13 +16,13 @@ import { getDatabase } from 'firebase-admin/database';
 console.time('Server started in');
 console.log('Server starting...');
 
-const admin = initializeAdmin({
-  // @ts-ignore
+initializeAdmin({
+  // @ts-expect-error - Firebase token exists in .env, but TS does not know
   credential: firebaseAdmin.credential.cert(JSON.parse(process.env.FRBS_TOKEN)),
   databaseURL: 'https://chessed-ac171-default-rtdb.europe-west1.firebasedatabase.app',
 });
 
-const client = initializeApp({
+initializeApp({
   apiKey: 'AIzaSyDaqEKpSmDf2uIfUtGp0tAuKvneAVUrdhs',
   authDomain: 'chessed-ac171.firebaseapp.com',
   databaseURL: 'https://chessed-ac171-default-rtdb.europe-west1.firebasedatabase.app',
@@ -34,7 +38,7 @@ app.use(bodyParser.json());
 app.use(
   bodyParser.urlencoded({
     extended: true,
-  })
+  }),
 );
 app.listen(3000);
 
@@ -94,7 +98,7 @@ wss.on('connection', async (ws, req) => {
           data: id,
           color: 'black',
           playerName: whiteName,
-        })
+        }),
       );
       game.white.ws.send(
         JSON.stringify({
@@ -102,7 +106,7 @@ wss.on('connection', async (ws, req) => {
           data: id,
           color: 'white',
           playerName: blackName,
-        })
+        }),
       );
     }
   }
@@ -116,9 +120,9 @@ wss.on('connection', async (ws, req) => {
     const isWhite = Math.floor(Math.random() * 2) == 0;
 
     game_list[newId] = {
-      // @ts-ignore
+      // @ts-expect-error - Await other player
       black: isWhite ? null : { ws, token, uid: decodedToken.uid },
-      // @ts-ignore
+      // @ts-expect-error - Await other player
       white: isWhite ? { ws, token, uid: decodedToken.uid } : null,
       turn: 0,
       began: false,
@@ -183,7 +187,7 @@ app.post('/login', async (request, response) => {
 
     return;
   } catch (error) {
-    // @ts-ignore
+    // @ts-expect-error - Type of `error` is unkown, but always has a .message
     response.status(400).json({ message: error.message });
     return;
   }
@@ -218,7 +222,7 @@ app.post('/signup', async (request, response) => {
 
     return;
   } catch (error) {
-    // @ts-ignore
+    // @ts-expect-error - Type of `error` is unkown, but always has a .message
     response.status(400).json({ data: error.message });
     return;
   }
