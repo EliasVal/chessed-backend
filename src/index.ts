@@ -177,7 +177,7 @@ app.post('/login', async (request, response) => {
 
   // * Check if all params are in place
   if (!email || !password) {
-    response.status(400).json({ message: 'Missing parameters' });
+    response.status(400).json({ error: 'Missing parameters' });
 
     return;
   }
@@ -187,14 +187,18 @@ app.post('/login', async (request, response) => {
 
     // * Revoke old token
     await getAuth().revokeRefreshTokens(cred.user.uid);
-    response.json({ data: await getClientAuth().currentUser?.getIdToken() });
+
+    response.json({
+      token: await getClientAuth().currentUser?.getIdToken(),
+      username: (await getDatabase().ref(`users/${cred.user.uid}/username`).get()).val(),
+    });
 
     await getClientAuth().signOut();
 
     return;
   } catch (error) {
     // @ts-expect-error - Type of `error` is unkown, but always has a .message
-    response.status(400).json({ message: error.message });
+    response.status(400).json({ error: error.message });
     return;
   }
 });
@@ -204,14 +208,14 @@ app.post('/signup', async (request, response) => {
 
   // * Check if all params were provided
   if (!email || !password) {
-    response.status(400).json({ data: 'Missing parameters' });
+    response.status(400).json({ error: 'Missing parameters' });
 
     return;
   }
 
   // * Check if username is atleast 3 chars long
   if ((username || '').length < 3) {
-    response.status(400).json({ data: 'Username too short' });
+    response.status(400).json({ error: 'Username too short' });
 
     return;
   }
@@ -229,8 +233,22 @@ app.post('/signup', async (request, response) => {
     return;
   } catch (error) {
     // @ts-expect-error - Type of `error` is unkown, but always has a .message
-    response.status(400).json({ data: error.message });
+    response.status(400).json({ error: error.message });
     return;
+  }
+});
+
+app.post('/validate_token', async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) res.status(400).send({ error: 'Missing token' });
+
+  try {
+    await getAuth().verifyIdToken(token);
+
+    res.sendStatus(200);
+  } catch {
+    res.status(401).send({ error: 'Invalid token' });
   }
 });
 
