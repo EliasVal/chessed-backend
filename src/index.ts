@@ -61,7 +61,7 @@ wss.on('connection', async (ws, req) => {
 
   const token = params.get('token') || '';
 
-  if (token) ws.close(4001, JSON.stringify({ type: 'close', data: 'Missing token' }));
+  if (!token) ws.close(4001, JSON.stringify({ type: 'close', data: 'Missing token' }));
 
   let decodedToken;
   try {
@@ -87,9 +87,9 @@ wss.on('connection', async (ws, req) => {
 
       game.began = true;
 
-      // * Get Player's names
-      const blackName = (await getDatabase().ref(`users/${game.black.uid}/username`).get()).val();
-      const whiteName = (await getDatabase().ref(`users/${game.white.uid}/username`).get()).val();
+      // * Get Players' data
+      const blackData = (await getDatabase().ref(`users/${game.black.uid}`).get()).val();
+      const whiteData = (await getDatabase().ref(`users/${game.white.uid}`).get()).val();
 
       // * Notify both players of a match start
       game.black.ws.send(
@@ -97,7 +97,8 @@ wss.on('connection', async (ws, req) => {
           type: 'match_start',
           data: id,
           color: 'black',
-          playerName: whiteName,
+          playerName: whiteData.username,
+          playerElo: whiteData.elo.toString(),
         }),
       );
       game.white.ws.send(
@@ -105,7 +106,8 @@ wss.on('connection', async (ws, req) => {
           type: 'match_start',
           data: id,
           color: 'white',
-          playerName: blackName,
+          playerName: blackData.username,
+          playerElo: blackData.elo.toString(),
         }),
       );
     }
@@ -188,9 +190,13 @@ app.post('/login', async (request, response) => {
     // * Revoke old token
     await getAuth().revokeRefreshTokens(cred.user.uid);
 
+    // * Get user's data (ELO, Username)
+    const userData = (await getDatabase().ref(`users/${cred.user.uid}`).get()).val();
+
     response.json({
       token: await getClientAuth().currentUser?.getIdToken(),
-      username: (await getDatabase().ref(`users/${cred.user.uid}/username`).get()).val(),
+      username: userData.username,
+      elo: userData.elo.toString(),
     });
 
     await getClientAuth().signOut();
