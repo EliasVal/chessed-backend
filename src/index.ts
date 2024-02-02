@@ -12,9 +12,12 @@ import firebaseAdmin from 'firebase-admin';
 import bodyParser from 'body-parser';
 import { getAuth } from 'firebase-admin/auth';
 import { getDatabase } from 'firebase-admin/database';
+import { Chess } from 'chess.js';
 
 console.time('Server started in');
 console.log('Server starting...');
+
+const abc = 'abcdefgh';
 
 initializeAdmin({
   // @ts-expect-error - Firebase token exists in .env, but TS does not know
@@ -82,8 +85,8 @@ wss.on('connection', async (ws, req) => {
       found = true;
       const game = game_list[id];
 
-      if (game.white) game.black = { ws, token, uid: decodedToken.uid };
-      else game.white = { ws, token, uid: decodedToken.uid };
+      if (game.white) game.black = { ws, token, uid: decodedToken.uid, elo: 0 };
+      else game.white = { ws, token, uid: decodedToken.uid, elo: 0 };
 
       game.began = true;
 
@@ -91,11 +94,14 @@ wss.on('connection', async (ws, req) => {
       const blackData = (await getDatabase().ref(`users/${game.black.uid}`).get()).val();
       const whiteData = (await getDatabase().ref(`users/${game.white.uid}`).get()).val();
 
+      game.black.elo = blackData.elo;
+      game.white.elo = whiteData.elo;
+
       // * Notify both players of a match start
       game.black.ws.send(
         JSON.stringify({
           type: 'match_start',
-          data: id,
+          gameId: id,
           color: 'black',
           playerName: whiteData.username,
           playerElo: whiteData.elo.toString(),
@@ -104,7 +110,7 @@ wss.on('connection', async (ws, req) => {
       game.white.ws.send(
         JSON.stringify({
           type: 'match_start',
-          data: id,
+          gameId: id,
           color: 'white',
           playerName: blackData.username,
           playerElo: blackData.elo.toString(),
@@ -119,7 +125,7 @@ wss.on('connection', async (ws, req) => {
     let newId = crypto.randomUUID();
     while (game_list[newId]) newId = crypto.randomUUID();
 
-    const isWhite = Math.floor(Math.random() * 2) == 0;
+    const isWhite = true; // = Math.floor(Math.random() * 2) == 0;
 
     game_list[newId] = {
       // @ts-expect-error - Await other player
@@ -128,6 +134,7 @@ wss.on('connection', async (ws, req) => {
       white: isWhite ? { ws, token, uid: decodedToken.uid } : null,
       turn: 0,
       began: false,
+      board: new Chess(),
     };
 
     ws.send(JSON.stringify({ type: 'match_create', data: newId }));
@@ -135,7 +142,7 @@ wss.on('connection', async (ws, req) => {
 
   ws.on('error', console.error);
 
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     let dt;
     try {
       dt = JSON.parse(data.toString());
@@ -159,19 +166,80 @@ wss.on('connection', async (ws, req) => {
     }
 
     const game = game_list[gameId];
-    // * White's move, notifies black
-    if (game.white.token == token && game.turn == 0) {
-      game.black.ws.send(JSON.stringify({ type: 'move', data: move }));
-      game.turn = 1;
+
+    let madeMove = false;
+
+    const mv = move.split('-');
+
+    const from: string[] = mv[0].split('');
+    from[1] = abc[parseInt(from[1])];
+    from[0] = (7 - parseInt(from[0]) + 1).toString();
+    from.reverse();
+
+    const to: string[] = mv[1].split('');
+    // to[0] =
+    to[1] = abc[parseInt(to[1])];
+    to[0] = (7 - parseInt(to[0]) + 1).toString();
+    to.reverse();
+
+    if (
+      (game.white.token == token && game.turn === 0) ||
+      (game.black.token == token && game.turn === 1)
+    ) {
+      try {
+        game.board.move({ from: from.join(''), to: to.join(''), promotion: mv[2] });
+        madeMove = true;
+      } catch {
+        console.log('ILLEGAL MOVE');
+      }
     }
-    // * Black's move, notifies white
-    else if (game.black.token == token && game.turn == 1) {
-      game.white.ws.send(JSON.stringify({ type: 'move', data: move }));
-      game.turn = 0;
+
+    if (!madeMove) return;
+
+    if (game.board.isGameOver()) {
+      let whiteScore = 1;
+      if (game.board.isCheckmate() && game.turn === 1) {
+        whiteScore = 0;
+      } else if (game.board.isDraw()) whiteScore = 0.5;
+
+      const newBlackElo = CalcNewElo(game.black.elo, game.white.elo, 1 - whiteScore);
+      const newWhiteElo = CalcNewElo(game.white.elo, game.black.elo, whiteScore);
+
+      game.black.ws.send(
+        JSON.stringify({
+          type: 'game_over',
+          data: game.turn == 1 ? 'null' : move,
+          winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
+          newElo: newBlackElo.toString(),
+        }),
+      );
+      game.white.ws.send(
+        JSON.stringify({
+          type: 'game_over',
+          data: game.turn == 0 ? 'null' : move,
+          winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
+          newElo: newWhiteElo.toString(),
+        }),
+      );
+
+      getDatabase().ref(`users/${game.black.uid}/elo`).set(newBlackElo);
+      getDatabase().ref(`users/${game.white.uid}/elo`).set(newWhiteElo);
+
+      game.white.ws.close(4001, JSON.stringify({ type: 'game_over' }));
+      game.black.ws.close(4001, JSON.stringify({ type: 'game_over' }));
+
+      delete game_list[gameId];
+    } else {
+      if (game.turn === 0) game.black.ws.send(JSON.stringify({ type: 'move', data: move }));
+      else if (game.turn === 1) game.white.ws.send(JSON.stringify({ type: 'move', data: move }));
+
+      game.turn = game.turn === 0 ? 1 : 0;
     }
   });
 
-  ws.on('close', () => {});
+  ws.on('close', () => {
+    // console.log('A CONN CLOSED');
+  });
 });
 
 app.post('/login', async (request, response) => {
@@ -258,4 +326,21 @@ app.post('/validate_token', async (req, res) => {
   }
 });
 
+const influenceK = 32;
+const magicC = 400;
+
+/**
+ * Based on https://stanislav-stankovic.medium.com/elo-rating-system-6196cc59941e
+ * @param player1Elo The elo of P1
+ * @param player2Elo The elo of P2
+ * @param outcome Outcome, from P1's perspective (W = 1, L = 0, D = 0.5)
+ * @returns The new elo of P1
+ */
+function CalcNewElo(player1Elo: number, player2Elo: number, outcome: number) {
+  const qA = Math.pow(10, player1Elo / magicC);
+  const qB = Math.pow(10, player2Elo / magicC);
+  const expectedOutcome = qA / (qA + qB);
+
+  return Math.ceil(player1Elo + influenceK * (outcome - expectedOutcome));
+}
 console.timeEnd('Server started in');

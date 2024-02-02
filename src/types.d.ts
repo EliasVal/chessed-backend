@@ -1,5 +1,5 @@
 import { type WebSocket } from 'ws';
-
+import { type Chess } from 'chess.js';
 declare global {
   type Game = {
     began: boolean;
@@ -10,6 +10,7 @@ declare global {
     turn: 0 | 1;
     white: Player;
     black: Player;
+    board: Chess;
   };
 }
 
@@ -17,4 +18,5 @@ interface Player {
   token: string;
   ws: WebSocket;
   uid: string;
+  elo: number;
 }
