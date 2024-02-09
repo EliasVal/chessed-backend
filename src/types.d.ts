@@ -11,6 +11,7 @@ declare global {
     white: Player;
     black: Player;
     board: Chess;
+    drawOffer: DrawOffer;
   };
 }
 
@@ -19,4 +20,10 @@ interface Player {
   ws: WebSocket;
   uid: string;
   elo: number;
+}
+
+interface DrawOffer {
+  movesSinceOffered: number;
+  offered: boolean;
+  offeredTo: 'white' | 'black' | '';
 }

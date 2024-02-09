@@ -135,6 +135,11 @@ wss.on('connection', async (ws, req) => {
       turn: 0,
       began: false,
       board: new Chess(),
+      drawOffer: {
+        offered: false,
+        movesSinceOffered: 11,
+        offeredTo: '',
+      },
     };
 
     ws.send(JSON.stringify({ type: 'match_create', data: newId }));
@@ -150,7 +155,7 @@ wss.on('connection', async (ws, req) => {
       return;
     }
 
-    const { move = '', token, gameId } = dt;
+    const { move = '', token, gameId, type } = dt;
 
     // ! No need to revalidate token here because
     // ! it is validated upon match lookup & start.
@@ -158,14 +163,63 @@ wss.on('connection', async (ws, req) => {
 
     if (!game_list[gameId]) return;
 
+    const game = game_list[gameId];
+
+    if (type == 'resign') {
+      // if (game.black.ws != ws && game.white.ws != ws) return;
+
+      let whiteScore: 0 | 0.5 | 1 = 0;
+
+      if (game.black.ws == ws) whiteScore = 1;
+      else if (game.white.ws == ws) whiteScore = 0;
+      else return;
+
+      GameOver(game, gameId, whiteScore, 'null', 'resignation');
+
+      return;
+    }
+
+    if (type == 'drawOffer') {
+      if (game.drawOffer.offered || game.drawOffer.movesSinceOffered < 10) return;
+
+      if (game.black.ws == ws) {
+        game.white.ws.send(JSON.stringify({ type: 'draw_offer' }));
+        game.drawOffer.offeredTo = 'white';
+      } else if (game.white.ws == ws) {
+        game.drawOffer.offeredTo = 'black';
+        game.black.ws.send(JSON.stringify({ type: 'draw_offer' }));
+      }
+
+      game.drawOffer.movesSinceOffered = 0;
+    }
+
+    if (type == 'drawAccept') {
+      if (game.drawOffer.offeredTo == 'white' && game.white.ws != ws) return;
+      if (game.drawOffer.offeredTo == 'black' && game.black.ws != ws) return;
+
+      GameOver(game, gameId, 0.5, 'null', 'agreement');
+
+      return;
+    }
+
+    if (type == 'drawDecline') {
+      if (game.drawOffer.offeredTo == 'white' && game.white.ws != ws) return;
+      if (game.drawOffer.offeredTo == 'black' && game.black.ws != ws) return;
+
+      if (game.drawOffer.offeredTo == 'white')
+        game.black.ws.send(JSON.stringify({ type: 'draw_decline' }));
+      if (game.drawOffer.offeredTo == 'black')
+        game.white.ws.send(JSON.stringify({ type: 'draw_decline' }));
+
+      return;
+    }
+
     // * | ^ and $ make so the match goes from the start of the string to the end (meaning no extra chars)
     // * | [0-7]{2} matches numbers from 0-7 (inclusive) twice in a row, then seperated by a dash
     // * | (-[qrnb])? is for pawn promotions, Queen, Rook, kNight, Bishop
     if (!move.match(/^([0-7]{2}-[0-7]{2}(-[qrnb])?)$/)) {
       return;
     }
-
-    const game = game_list[gameId];
 
     let madeMove = false;
 
@@ -197,38 +251,12 @@ wss.on('connection', async (ws, req) => {
     if (!madeMove) return;
 
     if (game.board.isGameOver()) {
-      let whiteScore = 1;
+      let whiteScore: 0 | 0.5 | 1 = 1;
       if (game.board.isCheckmate() && game.turn === 1) {
         whiteScore = 0;
       } else if (game.board.isDraw()) whiteScore = 0.5;
 
-      const newBlackElo = CalcNewElo(game.black.elo, game.white.elo, 1 - whiteScore);
-      const newWhiteElo = CalcNewElo(game.white.elo, game.black.elo, whiteScore);
-
-      game.black.ws.send(
-        JSON.stringify({
-          type: 'game_over',
-          data: game.turn == 1 ? 'null' : move,
-          winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
-          newElo: newBlackElo.toString(),
-        }),
-      );
-      game.white.ws.send(
-        JSON.stringify({
-          type: 'game_over',
-          data: game.turn == 0 ? 'null' : move,
-          winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
-          newElo: newWhiteElo.toString(),
-        }),
-      );
-
-      getDatabase().ref(`users/${game.black.uid}/elo`).set(newBlackElo);
-      getDatabase().ref(`users/${game.white.uid}/elo`).set(newWhiteElo);
-
-      game.white.ws.close(4001, JSON.stringify({ type: 'game_over' }));
-      game.black.ws.close(4001, JSON.stringify({ type: 'game_over' }));
-
-      delete game_list[gameId];
+      GameOver(game, gameId, whiteScore, move, 'checkmate');
     } else {
       if (game.turn === 0) game.black.ws.send(JSON.stringify({ type: 'move', data: move }));
       else if (game.turn === 1) game.white.ws.send(JSON.stringify({ type: 'move', data: move }));
@@ -342,5 +370,43 @@ function CalcNewElo(player1Elo: number, player2Elo: number, outcome: number) {
   const expectedOutcome = qA / (qA + qB);
 
   return Math.ceil(player1Elo + influenceK * (outcome - expectedOutcome));
+}
+
+function GameOver(
+  game: Game,
+  id: string,
+  whiteScore: 0 | 0.5 | 1,
+  finalMove: string = 'null',
+  reason: string = 'null',
+) {
+  const newBlackElo = CalcNewElo(game.black.elo, game.white.elo, 1 - whiteScore);
+  const newWhiteElo = CalcNewElo(game.white.elo, game.black.elo, whiteScore);
+
+  game.black.ws.send(
+    JSON.stringify({
+      type: 'game_over',
+      data: game.turn == 1 ? 'null' : finalMove,
+      winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
+      newElo: newBlackElo.toString(),
+      reason,
+    }),
+  );
+  game.white.ws.send(
+    JSON.stringify({
+      type: 'game_over',
+      data: game.turn == 0 ? 'null' : finalMove,
+      winner: whiteScore === 1 ? 'white' : whiteScore === 0.5 ? 'draw' : 'black',
+      newElo: newWhiteElo.toString(),
+      reason,
+    }),
+  );
+
+  getDatabase().ref(`users/${game.black.uid}/elo`).set(newBlackElo);
+  getDatabase().ref(`users/${game.white.uid}/elo`).set(newWhiteElo);
+
+  game.white.ws.close(4001, JSON.stringify({ type: 'game_over' }));
+  game.black.ws.close(4001, JSON.stringify({ type: 'game_over' }));
+
+  delete game_list[id];
 }
 console.timeEnd('Server started in');
