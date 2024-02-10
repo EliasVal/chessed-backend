@@ -58,7 +58,6 @@ wss.on('connection', async (ws, req) => {
   /*               */
   /*               */
   let found = false;
-  const games = Object.entries(game_list);
 
   const params = new URL('ws://localhost:8080' + req.url).searchParams;
 
@@ -79,7 +78,7 @@ wss.on('connection', async (ws, req) => {
   /*  MATCHMAKING  */
   /*               */
   /*               */
-  for (const [id, details] of games) {
+  for (const [id, details] of Object.entries(game_list)) {
     // * If found game
     if (!details.began) {
       found = true;
@@ -266,7 +265,17 @@ wss.on('connection', async (ws, req) => {
   });
 
   ws.on('close', () => {
-    // console.log('A CONN CLOSED');
+    for (const [id, details] of Object.entries(game_list)) {
+      if (details.black?.ws == ws || details.white?.ws == ws) {
+        if (details.began) {
+          const whiteResigned = details.white?.ws == ws ? 0 : 1;
+          // Act as if the player resigned
+          GameOver(game_list[id], id, whiteResigned, 'null', 'resignation');
+        } else {
+          delete game_list[id];
+        }
+      }
+    }
   });
 });
 
@@ -372,7 +381,7 @@ function CalcNewElo(player1Elo: number, player2Elo: number, outcome: number) {
   return Math.ceil(player1Elo + influenceK * (outcome - expectedOutcome));
 }
 
-function GameOver(
+async function GameOver(
   game: Game,
   id: string,
   whiteScore: 0 | 0.5 | 1,
@@ -406,6 +415,28 @@ function GameOver(
 
   game.white.ws.close(4001, JSON.stringify({ type: 'game_over' }));
   game.black.ws.close(4001, JSON.stringify({ type: 'game_over' }));
+
+  await getDatabase()
+    .ref(`matches/${id}`)
+    .set({
+      black: {
+        id: game.black.uid,
+        elo: newBlackElo,
+      },
+      white: {
+        id: game.white.uid,
+        elo: newWhiteElo,
+      },
+      // 1 == White (w)
+      // 0 == Black (b)
+      // 0.5 == Draw (d)
+      winner: whiteScore == 1 ? 'w' : whiteScore == 0 ? 'b' : 'd',
+      reason,
+      moves: game.board.pgn({ newline: '' }),
+    });
+
+  await getDatabase().ref(`users/${game.black.uid}/matches/${id}`).set(0);
+  await getDatabase().ref(`users/${game.white.uid}/matches/${id}`).set(0);
 
   delete game_list[id];
 }
