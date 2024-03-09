@@ -7,6 +7,8 @@ import {
   getAuth as getClientAuth,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  setPersistence,
+  browserSessionPersistence,
 } from 'firebase/auth';
 import firebaseAdmin from 'firebase-admin';
 import bodyParser from 'body-parser';
@@ -35,6 +37,8 @@ initializeApp({
   appId: '1:627390308707:web:7517887fc52d8fd6e93356',
 });
 
+setPersistence(getClientAuth(), browserSessionPersistence);
+
 // ! INITIALIZE EXPRESS.JS
 const app = express();
 app.use(bodyParser.json());
@@ -50,6 +54,8 @@ const wss = new WebSocketServer({
 });
 
 const game_list: { [index: string]: Game } = {};
+
+const db = getDatabase();
 
 wss.on('connection', async (ws, req) => {
   /*               */
@@ -84,17 +90,32 @@ wss.on('connection', async (ws, req) => {
       found = true;
       const game = game_list[id];
 
-      if (game.white) game.black = { ws, token, uid: decodedToken.uid, elo: 0 };
-      else game.white = { ws, token, uid: decodedToken.uid, elo: 0 };
+      // * Get Players' data
+      const blackData = (await db.ref(`users/${game.black?.uid ?? decodedToken.uid}`).get()).val();
+      const whiteData = (await db.ref(`users/${game.white?.uid ?? decodedToken.uid}`).get()).val();
+
+      if (game.white)
+        game.black = {
+          ws,
+          token,
+          uid: decodedToken.uid,
+          elo: blackData.elo ?? 100,
+          wins: blackData.wins ?? 0,
+          draws: blackData.draws ?? 0,
+          losses: blackData.losses ?? 0,
+        };
+      else
+        game.white = {
+          ws,
+          token,
+          uid: decodedToken.uid,
+          elo: whiteData.elo ?? 100,
+          wins: whiteData.wins ?? 0,
+          draws: whiteData.draws ?? 0,
+          losses: whiteData.losses ?? 0,
+        };
 
       game.began = true;
-
-      // * Get Players' data
-      const blackData = (await getDatabase().ref(`users/${game.black.uid}`).get()).val();
-      const whiteData = (await getDatabase().ref(`users/${game.white.uid}`).get()).val();
-
-      game.black.elo = blackData.elo;
-      game.white.elo = whiteData.elo;
 
       // * Notify both players of a match start
       game.black.ws.send(
@@ -124,13 +145,25 @@ wss.on('connection', async (ws, req) => {
     let newId = crypto.randomUUID();
     while (game_list[newId]) newId = crypto.randomUUID();
 
-    const isWhite = true; // = Math.floor(Math.random() * 2) == 0;
+    const isWhite = Math.floor(Math.random() * 2) == 0;
+
+    const playerData = (await db.ref(`users/${decodedToken.uid}`).get()).val();
+
+    const playerObj = {
+      ws,
+      token,
+      uid: decodedToken.uid,
+      elo: playerData.elo ?? 100,
+      wins: playerData.wins ?? 0,
+      draws: playerData.draws ?? 0,
+      losses: playerData.losses ?? 0,
+    };
 
     game_list[newId] = {
       // @ts-expect-error - Await other player
-      black: isWhite ? null : { ws, token, uid: decodedToken.uid },
+      black: isWhite ? null : playerObj,
       // @ts-expect-error - Await other player
-      white: isWhite ? { ws, token, uid: decodedToken.uid } : null,
+      white: isWhite ? playerObj : null,
       turn: 0,
       began: false,
       board: new Chess(),
@@ -296,12 +329,13 @@ app.post('/login', async (request, response) => {
     await getAuth().revokeRefreshTokens(cred.user.uid);
 
     // * Get user's data (ELO, Username)
-    const userData = (await getDatabase().ref(`users/${cred.user.uid}`).get()).val();
+    const userData = (await db.ref(`users/${cred.user.uid}`).get()).val();
 
     response.json({
       token: await getClientAuth().currentUser?.getIdToken(),
       username: userData.username,
       elo: userData.elo.toString(),
+      uid: cred.user.uid,
     });
 
     await getClientAuth().signOut();
@@ -335,7 +369,9 @@ app.post('/signup', async (request, response) => {
     const u = await createUserWithEmailAndPassword(getClientAuth(), email, password);
 
     // * Create user in the DB
-    await getDatabase().ref(`users/${u.user.uid}`).set({ username, elo: 100 });
+    await db
+      .ref(`users/${u.user.uid}`)
+      .set({ username, elo: 100, wins: 0, losses: 0, draws: 0, uid: u.user.uid });
 
     response.json({ data: await getClientAuth().currentUser?.getIdToken() });
 
@@ -363,6 +399,30 @@ app.post('/validate_token', async (req, res) => {
   }
 });
 
+app.post('/get_profile', async (req, res) => {
+  const { uid } = req.body;
+
+  if (!uid) {
+    res.status(400).send({ error: 'Missing UID' });
+    return;
+  }
+
+  const v: { [index: string]: number | string } = await (await db.ref(`users/${uid}`).get()).val();
+
+  const newObj: { [index: string]: number | string } = {};
+
+  if (v == null) {
+    res.status(404).send({ error: 'This user does not exist!' });
+    return;
+  } else {
+    // Convert all properties to strings, because it can't automatically convert to string in C#
+    for (const [key, val] of Object.entries(v)) {
+      newObj[key] = val.toString();
+    }
+    res.status(200).send(newObj);
+  }
+});
+
 const influenceK = 32;
 const magicC = 400;
 
@@ -378,7 +438,8 @@ function CalcNewElo(player1Elo: number, player2Elo: number, outcome: number) {
   const qB = Math.pow(10, player2Elo / magicC);
   const expectedOutcome = qA / (qA + qB);
 
-  return Math.ceil(player1Elo + influenceK * (outcome - expectedOutcome));
+  // ELO SHOULD NOT BE LOWER THAN 100
+  return Math.max(100, Math.ceil(player1Elo + influenceK * (outcome - expectedOutcome)));
 }
 
 async function GameOver(
@@ -410,33 +471,42 @@ async function GameOver(
     }),
   );
 
-  getDatabase().ref(`users/${game.black.uid}/elo`).set(newBlackElo);
-  getDatabase().ref(`users/${game.white.uid}/elo`).set(newWhiteElo);
+  db.ref(`users/${game.black.uid}/elo`).set(newBlackElo);
+  db.ref(`users/${game.white.uid}/elo`).set(newWhiteElo);
+
+  if (whiteScore == 1) {
+    db.ref(`users/${game.black.uid}/losses`).set(game.black.losses + 1);
+    db.ref(`users/${game.white.uid}/wins`).set(game.white.wins + 1);
+  } else if (whiteScore == 0) {
+    db.ref(`users/${game.black.uid}/wins`).set(game.black.wins + 1);
+    db.ref(`users/${game.white.uid}/losses`).set(game.white.losses + 1);
+  } else {
+    db.ref(`users/${game.black.uid}/draws`).set(game.black.draws + 1);
+    db.ref(`users/${game.white.uid}/draws`).set(game.white.draws + 1);
+  }
 
   game.white.ws.close(4001, JSON.stringify({ type: 'game_over' }));
   game.black.ws.close(4001, JSON.stringify({ type: 'game_over' }));
 
-  await getDatabase()
-    .ref(`matches/${id}`)
-    .set({
-      black: {
-        id: game.black.uid,
-        elo: newBlackElo,
-      },
-      white: {
-        id: game.white.uid,
-        elo: newWhiteElo,
-      },
-      // 1 == White (w)
-      // 0 == Black (b)
-      // 0.5 == Draw (d)
-      winner: whiteScore == 1 ? 'w' : whiteScore == 0 ? 'b' : 'd',
-      reason,
-      moves: game.board.pgn({ newline: '' }),
-    });
+  await db.ref(`matches/${id}`).set({
+    black: {
+      id: game.black.uid,
+      elo: newBlackElo,
+    },
+    white: {
+      id: game.white.uid,
+      elo: newWhiteElo,
+    },
+    // 1 == White (w)
+    // 0 == Black (b)
+    // 0.5 == Draw (d)
+    winner: whiteScore == 1 ? 'w' : whiteScore == 0 ? 'b' : 'd',
+    reason,
+    moves: game.board.pgn({ newline: '' }),
+  });
 
-  await getDatabase().ref(`users/${game.black.uid}/matches/${id}`).set(0);
-  await getDatabase().ref(`users/${game.white.uid}/matches/${id}`).set(0);
+  await db.ref(`users/${game.black.uid}/matches/${id}`).set(0);
+  await db.ref(`users/${game.white.uid}/matches/${id}`).set(0);
 
   delete game_list[id];
 }

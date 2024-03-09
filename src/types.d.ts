@@ -20,6 +20,9 @@ interface Player {
   ws: WebSocket;
   uid: string;
   elo: number;
+  wins: number;
+  losses: number;
+  draws: number;
 }
 
 interface DrawOffer {
