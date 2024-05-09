@@ -3,13 +3,7 @@ import express from 'express';
 import 'dotenv/config';
 import { initializeApp as initializeAdmin } from 'firebase-admin/app';
 import { initializeApp } from 'firebase/app';
-import {
-  getAuth as getClientAuth,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  setPersistence,
-  browserSessionPersistence,
-} from 'firebase/auth';
+import { getAuth as getClientAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import firebaseAdmin from 'firebase-admin';
 import bodyParser from 'body-parser';
 import { getAuth } from 'firebase-admin/auth';
@@ -36,8 +30,6 @@ initializeApp({
   messagingSenderId: '627390308707',
   appId: '1:627390308707:web:7517887fc52d8fd6e93356',
 });
-
-setPersistence(getClientAuth(), browserSessionPersistence);
 
 // ! INITIALIZE EXPRESS.JS
 const app = express();
@@ -312,42 +304,6 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
-app.post('/login', async (request, response) => {
-  const { email, password } = request.body;
-
-  // * Check if all params are in place
-  if (!email || !password) {
-    response.status(400).json({ error: 'Missing parameters' });
-
-    return;
-  }
-
-  try {
-    const cred = await signInWithEmailAndPassword(getClientAuth(), email, password);
-
-    // * Revoke old token
-    await getAuth().revokeRefreshTokens(cred.user.uid);
-
-    // * Get user's data (ELO, Username)
-    const userData = (await db.ref(`users/${cred.user.uid}`).get()).val();
-
-    response.json({
-      token: await getClientAuth().currentUser?.getIdToken(),
-      username: userData.username,
-      elo: userData.elo.toString(),
-      uid: cred.user.uid,
-    });
-
-    await getClientAuth().signOut();
-
-    return;
-  } catch (error) {
-    // @ts-expect-error - Type of `error` is unkown, but always has a .message
-    response.status(400).json({ error: error.message });
-    return;
-  }
-});
-
 app.post('/signup', async (request, response) => {
   const { email, password, username } = request.body;
 
@@ -373,7 +329,7 @@ app.post('/signup', async (request, response) => {
       .ref(`users/${u.user.uid}`)
       .set({ username, elo: 100, wins: 0, losses: 0, draws: 0, uid: u.user.uid });
 
-    response.json({ data: await getClientAuth().currentUser?.getIdToken() });
+    response.send({ message: 'Success' });
 
     await getClientAuth().signOut();
 
@@ -385,22 +341,10 @@ app.post('/signup', async (request, response) => {
   }
 });
 
-app.post('/validate_token', async (req, res) => {
-  const { token } = req.body;
-
-  if (!token) res.status(400).send({ error: 'Missing token' });
-
-  try {
-    await getAuth().verifyIdToken(token);
-
-    res.sendStatus(200);
-  } catch {
-    res.status(401).send({ error: 'Invalid token' });
-  }
-});
-
 app.post('/get_profile', async (req, res) => {
   const { uid } = req.body;
+
+  const needMatches = req.body.needMatches == 'true' ? true : false;
 
   if (!uid) {
     res.status(400).send({ error: 'Missing UID' });
@@ -409,18 +353,34 @@ app.post('/get_profile', async (req, res) => {
 
   const v: { [index: string]: number | string } = await (await db.ref(`users/${uid}`).get()).val();
 
-  const newObj: { [index: string]: number | string } = {};
+  if (needMatches && v != null) {
+    v.matches = await (await db.ref(`users/${uid}/matches`).orderByValue().get()).val();
+  }
 
   if (v == null) {
     res.status(404).send({ error: 'This user does not exist!' });
     return;
   } else {
-    // Convert all properties to strings, because it can't automatically convert to string in C#
-    for (const [key, val] of Object.entries(v)) {
-      newObj[key] = val.toString();
-    }
-    res.status(200).send(newObj);
+    res.status(200).send(v);
   }
+});
+
+app.post('/get_matchdata', async (req, res) => {
+  const { id } = req.body;
+
+  if (!id) {
+    res.status(400).send({ error: 'Missing ID' });
+    return;
+  }
+
+  const v: { [index: string]: number | string } = await (await db.ref(`matches/${id}`).get()).val();
+
+  if (v == null) {
+    res.status(404).send({ error: 'This match does not exist!' });
+    return;
+  }
+
+  return res.status(200).send(v);
 });
 
 const influenceK = 32;
@@ -503,10 +463,11 @@ async function GameOver(
     winner: whiteScore == 1 ? 'w' : whiteScore == 0 ? 'b' : 'd',
     reason,
     moves: game.board.pgn({ newline: '' }),
+    timestamp: Date.now().toString(),
   });
 
-  await db.ref(`users/${game.black.uid}/matches/${id}`).set(0);
-  await db.ref(`users/${game.white.uid}/matches/${id}`).set(0);
+  await db.ref(`users/${game.black.uid}/matches/${id}`).set(Date.now().toString());
+  await db.ref(`users/${game.white.uid}/matches/${id}`).set(Date.now().toString());
 
   delete game_list[id];
 }
