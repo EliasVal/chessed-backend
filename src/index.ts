@@ -39,10 +39,32 @@ app.use(
     extended: true,
   }),
 );
-app.listen(3000);
+// app.set('trust proxy', true);
+const port = process.env.PORT || 8080;
 
-const wss = new WebSocketServer({
-  port: 8080,
+const httpServer = app.listen(port, () => {
+  console.log(`Listening on port ${port}`);
+});
+
+httpServer.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url ?? '', 'wss://base.url');
+
+  console.log(url.pathname);
+  console.log(url);
+
+  if (url.pathname == '/connect') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+const wss = new WebSocketServer({ noServer: true });
+
+app.get('/', (req, res) => {
+  res.send('Hello, world!');
 });
 
 const game_list: { [index: string]: Game } = {};
@@ -354,12 +376,17 @@ app.post('/get_profile', async (req, res) => {
     return;
   }
 
-  const v: { [index: string]: number | string } = await (await db.ref(`users/${uid}`).get()).val();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v: { [index: string]: any } = await (await db.ref(`users/${uid}`).get()).val();
 
   if (needMatches && v != null) {
-    v.matches = await (
-      await db.ref(`users/${uid}/matches`).orderByValue().limitToFirst(10).get()
-    ).val();
+    const snapshot = await db
+      .ref(`users/${uid}/matches`)
+      .orderByChild('time')
+      .limitToLast(10)
+      .get();
+
+    v.matches = await snapshot.val();
   }
 
   if (v == null) {
@@ -471,8 +498,8 @@ async function GameOver(
     timestamp: Date.now().toString(),
   });
 
-  await db.ref(`users/${game.black.uid}/matches/${id}`).set(Date.now().toString());
-  await db.ref(`users/${game.white.uid}/matches/${id}`).set(Date.now().toString());
+  await db.ref(`users/${game.black.uid}/matches/${id}`).set({ time: Date.now() });
+  await db.ref(`users/${game.white.uid}/matches/${id}`).set({ time: Date.now() });
 
   delete game_list[id];
 }

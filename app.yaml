@@ -1,0 +1,19 @@
+runtime: nodejs
+env: flex
+runtime_config:
+  operating_system: ubuntu22
+  runtime_version: '20'
+
+manual_scaling:
+  instances: 1
+resources:
+  cpu: 2
+  memory_gb: 4
+  disk_size_gb: 10
+
+includes:
+  - env_variables.yaml
+
+network:
+  session_affinity: true
+

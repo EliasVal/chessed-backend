@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "tsc && node ./dist"
+    "build": "tsc",
+    "dev": "tsc && node ./dist",
+    "start": "node ./dist"
   },
   "author": "",
   "license": "ISC",
@@ -31,3 +33,4 @@
     "typescript": "^5.3.3"
   }
 }
+
