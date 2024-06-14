@@ -61,7 +61,10 @@ wss.on('connection', async (ws, req) => {
 
   const token = params.get('token') || '';
 
-  if (!token) ws.close(4001, JSON.stringify({ type: 'close', data: 'Missing token' }));
+  if (!token) {
+    ws.close(4001, JSON.stringify({ type: 'close', data: 'Missing token' }));
+    return;
+  }
 
   let decodedToken;
   try {
@@ -354,7 +357,9 @@ app.post('/get_profile', async (req, res) => {
   const v: { [index: string]: number | string } = await (await db.ref(`users/${uid}`).get()).val();
 
   if (needMatches && v != null) {
-    v.matches = await (await db.ref(`users/${uid}/matches`).orderByValue().get()).val();
+    v.matches = await (
+      await db.ref(`users/${uid}/matches`).orderByValue().limitToFirst(10).get()
+    ).val();
   }
 
   if (v == null) {
